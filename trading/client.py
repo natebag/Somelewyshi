@@ -189,31 +189,29 @@ class PolymarketClient:
                 spread_pct=book["spread_pct"] if book else None,
             )
 
-            adjusted_ev = adjust_ev_for_slippage(
-                ev_per_dollar=order.ev_per_dollar,
-                mid_price=order.market_price,
-                fill_price=fill_price,
-                true_prob=order.estimated_prob,
-            )
+            # Calculate slippage cost as % of edge
+            slippage_cost = abs(fill_price - order.market_price)
+            edge_remaining = order.ev_per_dollar - slippage_cost
 
             logger.info(
                 f"[DRY RUN] {order.side} ${order.amount_usd:.2f} "
                 f"at {fill_price:.4f} (mid: {order.market_price:.4f}) | "
-                f"EV: {adjusted_ev:.4f} (raw: {order.ev_per_dollar:.4f}) | "
+                f"slippage: {slippage_cost:.4f} | "
+                f"EV: {edge_remaining:.4f} (raw: {order.ev_per_dollar:.4f}) | "
                 f"Kelly: {order.kelly_fraction:.1%}"
             )
 
-            # If slippage kills the edge, mark as skipped
-            if adjusted_ev < 0.02:
+            # Only skip if slippage eats MORE THAN HALF the edge
+            if edge_remaining < order.ev_per_dollar * 0.5 and edge_remaining < 0.02:
                 logger.warning(
-                    f"[DRY RUN] Slippage kills edge: EV {order.ev_per_dollar:.4f} → {adjusted_ev:.4f} — SKIP"
+                    f"[DRY RUN] Slippage kills edge: {order.ev_per_dollar:.4f} → {edge_remaining:.4f} — SKIP"
                 )
                 return TradeResult(
                     order_id=None,
                     status="SKIPPED",
                     fill_price=fill_price,
                     amount_filled=0,
-                    error=f"Slippage reduced EV from {order.ev_per_dollar:.4f} to {adjusted_ev:.4f}",
+                    error=f"Slippage ate edge: {order.ev_per_dollar:.4f} → {edge_remaining:.4f}",
                 )
 
             return TradeResult(

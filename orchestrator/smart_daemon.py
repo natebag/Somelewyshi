@@ -46,6 +46,7 @@ class SmartDaemon:
 
     def _run_fast_loop(self):
         """Scan BTC fast markets (every 2 minutes)."""
+        self.pipeline.predict.reset_mirofish()
         self._scan_markets_of_type(
             [MarketType.BTC_FAST],
             max_markets=3,
@@ -54,6 +55,7 @@ class SmartDaemon:
 
     def _run_medium_loop(self):
         """Scan crypto + sports markets (every 15-30 minutes)."""
+        self.pipeline.predict.reset_mirofish()
         self._scan_markets_of_type(
             [MarketType.CRYPTO, MarketType.SPORTS],
             max_markets=5,
@@ -62,6 +64,7 @@ class SmartDaemon:
 
     def _run_slow_loop(self):
         """Scan political, weather, economic markets (every hour)."""
+        self.pipeline.predict.reset_mirofish()
         self._scan_markets_of_type(
             [MarketType.POLITICAL, MarketType.ECONOMIC, MarketType.WEATHER, MarketType.OTHER],
             max_markets=5,
@@ -237,10 +240,10 @@ class SmartDaemon:
         logger.info("  Maintenance:   every 5 minutes")
         logger.info("=" * 60)
 
-        # Run initial scans immediately
-        self._run_slow_loop()
-        self._run_medium_loop()
+        # Run initial scans immediately — fast first (time-sensitive)
         self._run_fast_loop()
+        self._run_medium_loop()
+        self._run_slow_loop()
         self._run_maintenance()
 
         # Schedule recurring loops
