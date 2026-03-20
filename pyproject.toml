@@ -1,0 +1,64 @@
+[project]
+name = "miro-fish"
+version = "0.1.0"
+description = "Predict → Trade → Broadcast: Multi-agent prediction + Polymarket trading + content automation"
+requires-python = ">=3.12"
+dependencies = [
+    # LLM
+    "anthropic>=0.40.0",
+    # Polymarket
+    "py-clob-client>=0.1.0",
+    # HTTP
+    "httpx>=0.27.0",
+    # Database
+    "sqlmodel>=0.0.22",
+    # CLI
+    "typer[all]>=0.12.0",
+    # Scheduling
+    "apscheduler>=3.10.0",
+    # Config
+    "pydantic-settings>=2.5.0",
+    "tomli>=2.0.0",
+    # Math
+    "numpy>=1.26.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+broadcast = [
+    # MoneyPrinterV2 deps for Twitter/YouTube
+    "selenium>=4.20.0",
+    "moviepy>=1.0.0",
+    "Pillow>=10.0.0",
+    "faster-whisper>=1.0.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+mirofish = "orchestrator.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["config", "orchestrator", "adapters", "trading", "db"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+norecursedirs = ["vendor", ".venv", "node_modules"]
+import_mode = "importlib"

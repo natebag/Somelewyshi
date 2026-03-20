@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  # ── Bot daemon — scans, predicts, trades ──────────────
+  bot:
+    build: .
+    container_name: mirofish-bot
+    env_file: .env
+    environment:
+      - MIROFISH_BASE_URL=http://mirofish:5001
+    volumes:
+      - ./data:/app/data          # SQLite DB persistence
+      - ./config:/app/config      # settings.toml
+    command: ["daemon", "--interval", "6", "-v"]
+    depends_on:
+      mirofish:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Streamlit dashboard ───────────────────────────────
+  dashboard:
+    build: .
+    container_name: mirofish-dashboard
+    env_file: .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    entrypoint: ["streamlit", "run", "scripts/dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    restart: unless-stopped
+
+  # ── MiroFish prediction engine ────────────────────────
+  mirofish:
+    image: ghcr.io/666ghj/mirofish:latest
+    container_name: mirofish-engine
+    ports:
+      - "3000:3000"     # Frontend
+      - "5001:5001"     # Backend API
+    env_file: ./vendor/mirofish/.env
+    volumes:
+      - ./vendor/mirofish/backend/uploads:/app/backend/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

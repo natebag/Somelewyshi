@@ -1,0 +1,36 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Data
+data/
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+secrets/
+*.cookies.json
+
+# Config overrides
+config/settings.local.toml
+
+# uv
+uv.lock
+
+# MoneyPrinterV2 artifacts
+*.mp4
+*.wav
+*.srt

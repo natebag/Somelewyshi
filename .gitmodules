@@ -1,0 +1,6 @@
+[submodule "vendor/mirofish"]
+	path = vendor/mirofish
+	url = https://github.com/666ghj/MiroFish.git
+[submodule "vendor/moneyprinterv2"]
+	path = vendor/moneyprinterv2
+	url = https://github.com/FujiwaraChoki/MoneyPrinterV2.git

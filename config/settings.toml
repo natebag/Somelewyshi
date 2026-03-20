@@ -1,0 +1,28 @@
+[general]
+log_level = "INFO"
+
+[mirofish]
+base_url = "http://localhost:5001"
+simulation_rounds = 30
+poll_interval_seconds = 5
+poll_timeout_seconds = 300
+
+[trading]
+chain_id = 137
+clob_url = "https://clob.polymarket.com"
+signature_type = 0
+bankroll_usd = 500.0
+max_position_usd = 50.0
+kelly_fraction = 0.25
+min_ev_threshold = 0.05
+dry_run = true
+
+[broadcast]
+twitter_enabled = true
+youtube_enabled = false
+twitter_account_id = "1"
+youtube_niche = "finance predictions"
+
+[scheduler]
+enabled = false
+interval_hours = 6
