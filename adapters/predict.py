@@ -46,7 +46,7 @@ class PredictAdapter:
         base_url: str = "http://localhost:5001",
         llm: LLMClient | None = None,
         poll_interval: int = 5,
-        poll_timeout: int = 300,
+        poll_timeout: int = 90,
         use_research: bool = True,
     ):
         self.base_url = base_url.rstrip("/")
@@ -55,6 +55,7 @@ class PredictAdapter:
         self.poll_timeout = poll_timeout
         self.use_research = use_research
         self._researcher = None
+        self._mirofish_failed = False  # Skip MiroFish after first failure in a session
 
     @property
     def researcher(self):
@@ -65,7 +66,9 @@ class PredictAdapter:
         return self._researcher
 
     def is_mirofish_available(self) -> bool:
-        """Check if MiroFish server is running."""
+        """Check if MiroFish server is running and hasn't failed recently."""
+        if self._mirofish_failed:
+            return False
         try:
             with httpx.Client(base_url=self.base_url, timeout=5) as client:
                 resp = client.get("/health")
@@ -73,6 +76,10 @@ class PredictAdapter:
                 return data.get("status") == "ok"
         except (httpx.ConnectError, httpx.TimeoutException, Exception):
             return False
+
+    def reset_mirofish(self):
+        """Reset MiroFish failure flag (call between daemon cycles)."""
+        self._mirofish_failed = False
 
     def run_prediction(
         self,
@@ -101,7 +108,7 @@ class PredictAdapter:
             except Exception as e:
                 logger.warning(f"[PREDICT] Auto-research failed: {e}")
 
-        # Try MiroFish with research context
+        # Try MiroFish with research context (skip if it already failed this session)
         if self.is_mirofish_available():
             try:
                 logger.info("[PREDICT] MiroFish available — running simulation")
@@ -110,7 +117,8 @@ class PredictAdapter:
                 result.research_summary = research_summary
                 return result
             except Exception as e:
-                logger.warning(f"[PREDICT] MiroFish failed ({e}), falling back")
+                logger.warning(f"[PREDICT] MiroFish failed ({e}) — skipping for remaining markets this cycle")
+                self._mirofish_failed = True  # Don't waste 5min on every market
 
         # Research-enhanced Claude estimation
         if research_doc and self.llm:

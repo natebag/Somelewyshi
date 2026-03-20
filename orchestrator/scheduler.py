@@ -55,6 +55,9 @@ class PipelineScheduler:
 
     def _run_cycle(self):
         """Execute one full discover + analyze + trade cycle."""
+        # Reset MiroFish flag — give it a fresh chance each cycle
+        self.predict.reset_mirofish()
+
         cycle_start = datetime.now(timezone.utc)
         logger.info("=" * 60)
         logger.info(f"CYCLE START: {cycle_start.strftime('%Y-%m-%d %H:%M UTC')}")
