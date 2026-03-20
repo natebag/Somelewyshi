@@ -40,13 +40,17 @@ class SmartDaemon:
         self.scheduler = BlockingScheduler()
         self.engine = init_db()
 
+        # Disable MiroFish for daemon — too slow for automated scanning.
+        # Research+GPT-4o is fast and still uses 15 sources per market.
+        # MiroFish can still be used via manual `mirofish predict` or `mirofish run`.
+        self.pipeline.predict._mirofish_failed = True
+
         # Track last scan time per market type
         self._last_scan: dict[MarketType, float] = {}
         self._cycle_count = 0
 
     def _run_fast_loop(self):
         """Scan BTC fast markets (every 2 minutes)."""
-        self.pipeline.predict.reset_mirofish()
         self._scan_markets_of_type(
             [MarketType.BTC_FAST],
             max_markets=3,
@@ -55,7 +59,6 @@ class SmartDaemon:
 
     def _run_medium_loop(self):
         """Scan crypto + sports markets (every 15-30 minutes)."""
-        self.pipeline.predict.reset_mirofish()
         self._scan_markets_of_type(
             [MarketType.CRYPTO, MarketType.SPORTS],
             max_markets=5,
@@ -64,7 +67,6 @@ class SmartDaemon:
 
     def _run_slow_loop(self):
         """Scan political, weather, economic markets (every hour)."""
-        self.pipeline.predict.reset_mirofish()
         self._scan_markets_of_type(
             [MarketType.POLITICAL, MarketType.ECONOMIC, MarketType.WEATHER, MarketType.OTHER],
             max_markets=5,
