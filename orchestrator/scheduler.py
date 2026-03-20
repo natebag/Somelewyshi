@@ -172,8 +172,6 @@ class PipelineScheduler:
                 )
         if updates:
             logger.info(f"[POSITIONS] Updated {len(updates)} positions")
-            except Exception as e:
-                logger.debug(f"  Failed to update {pos.position_id}: {e}")
 
         session.close()
 
