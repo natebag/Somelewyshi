@@ -80,7 +80,23 @@ class Pipeline:
             session.commit()
 
             logger.info(f"[PREDICT] Analyzing: {market_question}")
-            prediction = self.predict.run_prediction(market_question)
+
+            # Inject BTC price context for crypto markets
+            market_data = {}
+            try:
+                from trading.btc_feed import get_btc_feed
+                btc = get_btc_feed()
+                if btc.is_btc_market(market_question):
+                    snap = btc.get_snapshot()
+                    if snap:
+                        market_data["btc_context"] = snap.to_prompt_context()
+                        logger.info(f"[PREDICT] BTC context: {snap.to_prompt_context()}")
+            except Exception as e:
+                logger.debug(f"BTC feed unavailable: {e}")
+
+            prediction = self.predict.run_prediction(
+                market_question, market_data=market_data or None
+            )
 
             # Save prediction
             pred_record = Prediction(

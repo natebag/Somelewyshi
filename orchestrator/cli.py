@@ -303,6 +303,107 @@ def daemon(
 
 
 @app.command()
+def fastloop(
+    interval_minutes: int = typer.Option(5, "--interval", "-i", help="Minutes between scans"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """BTC fast-loop: 5-min market scanner with live price feed."""
+    _setup_logging("DEBUG" if verbose else "INFO")
+    import time as _time
+    from trading.btc_feed import get_btc_feed
+    from trading.fast_loop import FastLoopStrategy, PriceBar
+    from datetime import datetime, timezone
+
+    settings, llm, predict_adapter, trade_adapter, broadcast, poly_client = _build_components()
+    pipeline = Pipeline(predict=predict_adapter, trade=trade_adapter, broadcast=broadcast)
+    btc_feed = get_btc_feed()
+    strategy = FastLoopStrategy(min_signals_agree=3, min_edge=0.08)
+
+    console.print("[bold]Starting BTC Fast Loop[/bold]")
+    console.print(f"  Scan interval: {interval_minutes}min")
+    console.print(f"  Mode:          {'DRY RUN' if settings.trading.dry_run else 'LIVE'}")
+    console.print("  Press Ctrl+C to stop\n")
+
+    cycle = 0
+    while True:
+        try:
+            cycle += 1
+            now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+            # Get live BTC price
+            btc = btc_feed.get_snapshot()
+            if btc:
+                console.print(f"\n[dim]{now}[/dim] [bold]Cycle {cycle}[/bold] | {btc.to_prompt_context()}")
+            else:
+                console.print(f"\n[dim]{now}[/dim] [bold]Cycle {cycle}[/bold] | BTC feed unavailable")
+
+            # Scan for BTC markets
+            from trading.scanner import MarketScanner, ScanFilter
+            scanner = MarketScanner(poly_client, ScanFilter(min_volume=1000, max_markets=50))
+            results = scanner.scan()
+
+            btc_markets = [r for r in results if btc_feed.is_btc_market(r.snapshot.question)]
+
+            if not btc_markets:
+                console.print(f"  [dim]No BTC markets found[/dim]")
+                _time.sleep(interval_minutes * 60)
+                continue
+
+            console.print(f"  Found {len(btc_markets)} BTC markets")
+
+            for r in btc_markets[:3]:  # Top 3 BTC markets
+                snap = r.snapshot
+                console.print(f"\n  [cyan]{snap.question[:60]}[/cyan]")
+                console.print(f"  YES: {snap.yes_price:.0%} | NO: {snap.no_price:.0%} | Vol: ${snap.volume:,.0f}")
+
+                # Add BTC price as history for momentum signals
+                strategy.add_price(PriceBar(
+                    timestamp=datetime.now(timezone.utc),
+                    yes_price=snap.yes_price,
+                    volume=snap.volume,
+                ))
+
+                # Run prediction with BTC context
+                try:
+                    result = pipeline.run(
+                        market_question=snap.question,
+                        market_id=snap.condition_id,
+                        market_price=snap.yes_price,
+                        token_id=snap.token_id_yes,
+                        skip_broadcast=True,
+                    )
+
+                    sig = result.trade_signal
+                    pred = result.prediction
+
+                    # Color-coded output
+                    edge_color = "green" if sig.ev_per_dollar > 0.10 else "yellow" if sig.ev_per_dollar > 0.05 else "dim"
+                    dir_display = {
+                        "BUY_YES": "[green]BUY YES[/green]",
+                        "BUY_NO": "[red]BUY NO[/red]",
+                    }.get(sig.direction, "[dim]SKIP[/dim]")
+
+                    console.print(
+                        f"  P(up): {pred.probability:.2f} | "
+                        f"Edge: [{edge_color}]{sig.ev_per_dollar:.0%}[/{edge_color}] | "
+                        f"Conf: {pred.confidence} | "
+                        f"Signal: {dir_display} | "
+                        f"Size: ${sig.position_size:.2f}"
+                    )
+                except Exception as e:
+                    console.print(f"  [red]Error: {e}[/red]")
+
+            _time.sleep(interval_minutes * 60)
+
+        except KeyboardInterrupt:
+            console.print("\n[bold]Fast loop stopped[/bold]")
+            break
+        except Exception as e:
+            console.print(f"[red]Cycle error: {e}[/red]")
+            _time.sleep(30)
+
+
+@app.command()
 def history(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of records to show"),
     positions: bool = typer.Option(False, "--positions", "-p", help="Show positions instead of trades"),

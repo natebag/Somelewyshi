@@ -138,6 +138,9 @@ class PipelineScheduler:
         # Phase 4: Update existing positions
         self._update_positions()
 
+        # Phase 5: Auto-optimize if win rate is dropping
+        self._check_auto_optimize()
+
         # Summary
         logger.info("")
         logger.info(f"CYCLE COMPLETE: {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
@@ -172,6 +175,76 @@ class PipelineScheduler:
                 )
         if updates:
             logger.info(f"[POSITIONS] Updated {len(updates)} positions")
+
+        session.close()
+
+    def _check_auto_optimize(self):
+        """Auto-trigger strategy optimization when win rate drops below 55%.
+
+        Inspired by OpenClaw's self_improve.py pattern:
+        Check performance → if degrading → re-tune → deploy.
+        """
+        session = get_session(self.engine)
+        tracker = PositionTracker(session)
+        summary = tracker.get_portfolio_summary()
+
+        if summary.closed_positions < 10:
+            session.close()
+            return  # Not enough data to optimize
+
+        if summary.win_rate < 0.55:
+            logger.warning(
+                f"[AUTO-OPTIMIZE] Win rate dropped to {summary.win_rate:.0%} "
+                f"({summary.closed_positions} closed positions) — triggering optimization"
+            )
+
+            from trading.optimizer import HistoricalTrade, StrategyOptimizer
+
+            # Build historical trades from closed positions
+            from db.models import Trade, TradeStatus
+            from sqlmodel import select
+
+            trades = session.exec(
+                select(Trade).where(
+                    Trade.status.in_([TradeStatus.DRY_RUN, TradeStatus.EXECUTED])
+                )
+            ).all()
+
+            if len(trades) < 10:
+                session.close()
+                return
+
+            hist_trades = []
+            for t in trades:
+                hist_trades.append(HistoricalTrade(
+                    market_id=t.market_id or "",
+                    question="",
+                    entry_price=t.market_price_at_entry,
+                    exit_price=t.fill_price or t.market_price_at_entry,
+                    our_estimate=t.market_price_at_entry + t.expected_value,
+                    direction=t.side,
+                    resolution="YES" if t.expected_value > 0 else "NO",
+                    time_to_expiry_at_entry=300,
+                    hold_duration_seconds=120,
+                    size_usd=t.size_usd,
+                ))
+
+            optimizer = StrategyOptimizer(historical_trades=hist_trades)
+            best_params = optimizer.run_optimization(num_experiments=30)
+
+            logger.info(
+                f"[AUTO-OPTIMIZE] Complete — new params: "
+                f"min_ev={best_params.min_ev_threshold:.3f}, "
+                f"kelly={best_params.kelly_fraction:.3f}, "
+                f"target_capture={best_params.target_capture_pct:.3f}"
+            )
+
+            # Log the results
+            logger.info(optimizer.get_results_summary())
+        else:
+            logger.debug(
+                f"[AUTO-OPTIMIZE] Win rate {summary.win_rate:.0%} — no optimization needed"
+            )
 
         session.close()
 

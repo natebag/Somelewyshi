@@ -70,6 +70,10 @@ Research Context:
 {market_data['research_context'][:4000]}
 """
 
+        btc_ctx = ""
+        if market_data.get("btc_context"):
+            btc_ctx = f"\n{market_data['btc_context']}\n"
+
         prompt = f"""You are a quantitative prediction market analyst.
 
 Analyze this Polymarket market:
@@ -79,6 +83,7 @@ Current YES price: {market_data.get('yes_price', 'N/A')}
 Current NO price: {market_data.get('no_price', 'N/A')}
 Volume: {market_data.get('volume', 'N/A')}
 Close date: {market_data.get('end_date', 'N/A')}
+{btc_ctx}
 {research_ctx}
 Your task:
 1. Estimate the REAL probability of the event (0.00 - 1.00)
