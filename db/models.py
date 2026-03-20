@@ -66,11 +66,14 @@ class Prediction(SQLModel, table=True):
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     pipeline_run_id: str = Field(foreign_key="pipeline_runs.id")
+    market_query: str = ""
     probability: float
     confidence: float
     reasoning: Optional[str] = None
     report_text: Optional[str] = None
     mirofish_session_id: Optional[str] = None
+    resolution: Optional[str] = None  # "YES", "NO", or None if unresolved
+    resolved_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

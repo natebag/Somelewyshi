@@ -414,6 +414,31 @@ def history(
 
 
 @app.command()
+def calibration():
+    """Check prediction accuracy — is the bot actually right?"""
+    _setup_logging("WARNING")
+
+    from db.engine import get_engine, get_session
+    from trading.calibration import CalibrationTracker
+
+    engine = get_engine()
+    session = get_session(engine)
+
+    tracker = CalibrationTracker(session)
+    report = tracker.analyze()
+
+    if report.resolved_predictions == 0:
+        console.print("[yellow]No resolved predictions yet.[/yellow]")
+        console.print(f"[dim]{report.total_predictions} predictions waiting for resolution.[/dim]")
+        console.print("\n[dim]Markets need to resolve (close) before we can measure accuracy.[/dim]")
+        session.close()
+        return
+
+    console.print(Panel(report.summary(), title="Prediction Calibration", width=70))
+    session.close()
+
+
+@app.command()
 def status():
     """Show current system status and recent pipeline runs."""
     _setup_logging("WARNING")

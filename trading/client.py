@@ -172,15 +172,54 @@ class PolymarketClient:
     def execute_order(self, order: TradeOrder) -> TradeResult:
         """Execute a trade order on Polymarket."""
         if order.dry_run:
+            # Simulate realistic fill with slippage
+            from trading.slippage import estimate_fill_price, adjust_ev_for_slippage
+
+            # Try to get real order book for accurate spread
+            book = None
+            if order.token_id:
+                book = self.get_order_book(order.token_id)
+
+            fill_price = estimate_fill_price(
+                side=order.side,
+                mid_price=order.market_price,
+                order_size_usd=order.amount_usd,
+                best_bid=book["best_bid"] if book else None,
+                best_ask=book["best_ask"] if book else None,
+                spread_pct=book["spread_pct"] if book else None,
+            )
+
+            adjusted_ev = adjust_ev_for_slippage(
+                ev_per_dollar=order.ev_per_dollar,
+                mid_price=order.market_price,
+                fill_price=fill_price,
+                true_prob=order.estimated_prob,
+            )
+
             logger.info(
                 f"[DRY RUN] {order.side} ${order.amount_usd:.2f} "
-                f"at {order.market_price:.2f} | EV: {order.ev_per_dollar:.4f} | "
+                f"at {fill_price:.4f} (mid: {order.market_price:.4f}) | "
+                f"EV: {adjusted_ev:.4f} (raw: {order.ev_per_dollar:.4f}) | "
                 f"Kelly: {order.kelly_fraction:.1%}"
             )
+
+            # If slippage kills the edge, mark as skipped
+            if adjusted_ev < 0.02:
+                logger.warning(
+                    f"[DRY RUN] Slippage kills edge: EV {order.ev_per_dollar:.4f} → {adjusted_ev:.4f} — SKIP"
+                )
+                return TradeResult(
+                    order_id=None,
+                    status="SKIPPED",
+                    fill_price=fill_price,
+                    amount_filled=0,
+                    error=f"Slippage reduced EV from {order.ev_per_dollar:.4f} to {adjusted_ev:.4f}",
+                )
+
             return TradeResult(
                 order_id=None,
                 status="DRY_RUN",
-                fill_price=order.market_price,
+                fill_price=fill_price,
                 amount_filled=order.amount_usd,
             )
 

@@ -147,26 +147,31 @@ class PipelineScheduler:
         logger.info("=" * 60)
 
     def _update_positions(self):
-        """Update prices on all open positions."""
+        """Update positions with real prices + repricing exit logic."""
         session = get_session(self.engine)
-        tracker = PositionTracker(session)
-        open_positions = tracker.get_open_positions()
 
-        if not open_positions:
-            return
+        from trading.position_monitor import PositionMonitor
+        from trading.repricing import RepricingEngine
 
-        logger.info(f"[POSITIONS] Updating {len(open_positions)} open positions...")
-        for pos in open_positions:
-            try:
-                if pos.market_id:
-                    new_price = self.poly_client.get_midpoint(pos.market_id)
-                    if new_price is not None:
-                        tracker.update_price(pos.position_id, new_price)
-                        logger.info(
-                            f"  {pos.market_id[:12]}... "
-                            f"{pos.entry_price:.0%} -> {new_price:.0%} "
-                            f"P&L: ${pos.unrealized_pnl:+.2f}"
-                        )
+        monitor = PositionMonitor(
+            session=session,
+            poly_client=self.poly_client,
+            repricing_engine=RepricingEngine(),
+        )
+
+        actions = monitor.update_all_positions()
+
+        closes = [a for a in actions if a.get("action") == "CLOSED"]
+        updates = [a for a in actions if a.get("action") == "UPDATED"]
+
+        if closes:
+            logger.info(f"[POSITIONS] Closed {len(closes)} positions:")
+            for c in closes:
+                logger.info(
+                    f"  P&L: ${c['pnl']:+.2f} | held {c['hold_seconds']}s | {c['reason']}"
+                )
+        if updates:
+            logger.info(f"[POSITIONS] Updated {len(updates)} positions")
             except Exception as e:
                 logger.debug(f"  Failed to update {pos.position_id}: {e}")
 
