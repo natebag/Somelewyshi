@@ -65,10 +65,12 @@ mirofish status
 | `mirofish trade "Question" -p 0.42` | Predict + evaluate trade |
 | `mirofish run "Question" -p 0.42` | Full pipeline: predict + trade + broadcast |
 | `mirofish scan --analyze` | Scan Polymarket for mispriced markets |
-| `mirofish daemon --interval 1` | Auto-scan + predict + trade on schedule (all markets) |
+| `mirofish smart` | **Smart daemon** — auto-adjusts scan frequency per market type |
+| `mirofish daemon --interval 1` | Simple daemon — fixed interval for all markets |
 | `mirofish fastloop --interval 5` | BTC 5-min market scanner with live price feed |
 | `mirofish history --portfolio` | View trades, positions, P&L |
 | `mirofish calibration` | Check prediction accuracy (Brier score, win rate) |
+| `mirofish validate` | Check resolved markets, compare repricing vs hold P&L |
 | `mirofish status` | System health check |
 
 ## Example
@@ -92,31 +94,54 @@ mirofish scan -n 10
 # Start the daemon (scans every hour, all market types)
 mirofish daemon --interval 1 --max-markets 5
 
-# BTC fast-loop (scans every 5 minutes with live BTC price)
+# Smart daemon (recommended — auto-adjusts scan frequency)
+mirofish smart
+
+# Or simple daemon (fixed hourly interval)
+mirofish daemon --interval 1 --max-markets 5
+
+# Or BTC-only fast-loop
 mirofish fastloop --interval 5
 
 # Check if predictions are actually correct
 mirofish calibration
+
+# Compare repricing exit vs hold-to-resolution P&L
+mirofish validate
 ```
 
-## What the Daemon Does (Every Cycle)
+## Smart Daemon
+
+`mirofish smart` is the recommended way to run. It auto-classifies markets and scans at the right frequency:
 
 ```
-DISCOVER → Gamma API, find top markets by volume
+┌─────────────────┬───────────┬──────────────────────────────────────┐
+│ Market Type      │ Frequency │ Examples                             │
+├─────────────────┼───────────┼──────────────────────────────────────┤
+│ BTC Fast (5min)  │ 2 min     │ "BTC above $95K in 5 minutes?"       │
+│ Crypto / Sports  │ 15 min    │ "ETH > $4K by Friday?", NBA games    │
+│ Political / Wx   │ 60 min    │ "Fed rate cut?", "NYC temp > 60°F?"  │
+│ Maintenance      │ 5 min     │ Position monitoring + resolutions     │
+└─────────────────┴───────────┴──────────────────────────────────────┘
+```
+
+Each cycle:
+```
+SCAN     → Gamma API, filtered by market type
     ↓
-RESEARCH → Decompose question, gather 10-15 evidence sources, synthesize
+RESEARCH → Auto-research engine (10-15 evidence sources)
     ↓
-PREDICT  → GPT-4o estimates probability (+ BTC price for crypto markets)
+PREDICT  → GPT-4o + BTC price feed (for crypto markets)
     ↓
-EVALUATE → EV check → slippage filter → Kelly sizing → position cap
+EVALUATE → EV → slippage simulation → Kelly sizing → risk cap
     ↓
-TRADE    → Execute with realistic fill price (dry-run or live)
+TRADE    → Realistic dry-run or live execution
     ↓
-MONITOR  → Poll real prices, repricing exit engine (5 exit triggers)
+MONITOR  → Real price polling + repricing exit engine
     ↓
-OPTIMIZE → If win rate < 55% → auto-retune strategy params
+RESOLVE  → Track market outcomes, validate predictions
     ↓
-SLEEP    → Repeat
+OPTIMIZE → Auto-retune strategy when win rate drops
 ```
 
 ## Architecture

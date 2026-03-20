@@ -303,6 +303,101 @@ def daemon(
 
 
 @app.command()
+def smart(
+    max_markets: int = typer.Option(20, "--max-markets", "-n"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Smart daemon: auto-adjusts scan frequency per market type.
+
+    BTC fast (2min) | Crypto/Sports (15min) | Political/Weather (1hr)
+    Plus: position monitoring, resolution tracking, auto-optimization.
+    """
+    _setup_logging("DEBUG" if verbose else "INFO")
+    from orchestrator.smart_daemon import SmartDaemon
+
+    settings, llm, predict_adapter, trade_adapter, broadcast, poly_client = _build_components()
+    pipeline = Pipeline(predict=predict_adapter, trade=trade_adapter, broadcast=broadcast)
+
+    daemon = SmartDaemon(
+        pipeline=pipeline,
+        poly_client=poly_client,
+        max_markets=max_markets,
+    )
+
+    console.print("[bold]Starting Miro Fish Smart Daemon[/bold]")
+    console.print("  BTC Fast:      every 2 min")
+    console.print("  Crypto/Sports: every 15 min")
+    console.print("  Political/Wx:  every 60 min")
+    console.print("  Maintenance:   every 5 min (positions + resolutions + optimizer)")
+    console.print(f"  Mode:          {'DRY RUN' if settings.trading.dry_run else 'LIVE'}")
+    console.print("  Press Ctrl+C to stop\n")
+
+    daemon.start()
+
+
+@app.command()
+def validate(
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Check resolved markets and compare repricing vs hold-to-resolution P&L."""
+    _setup_logging("DEBUG" if verbose else "INFO")
+
+    from db.engine import get_engine, get_session
+    from trading.resolution import ResolutionTracker
+
+    settings, llm, predict_adapter, trade_adapter, broadcast, poly_client = _build_components()
+
+    engine = get_engine()
+    session = get_session(engine)
+    resolver = ResolutionTracker(session, poly_client)
+
+    console.print("[bold]Checking market resolutions...[/bold]\n")
+    results = resolver.check_resolutions()
+
+    if not results:
+        console.print("[dim]No newly resolved markets found.[/dim]")
+        session.close()
+        return
+
+    table = Table(title="Resolution Validation", show_lines=True)
+    table.add_column("Market", max_width=35)
+    table.add_column("Predicted", justify="right", width=8)
+    table.add_column("Actual", width=6)
+    table.add_column("Correct?", width=8)
+    table.add_column("Repricing", justify="right", width=10)
+    table.add_column("Hold", justify="right", width=10)
+    table.add_column("Diff", justify="right", width=8)
+
+    for v in results:
+        correct_style = "green" if v.prediction_correct else "red"
+        diff_style = "green" if v.pnl_difference >= 0 else "red"
+
+        table.add_row(
+            v.market_question[:35],
+            f"{v.predicted_prob:.0%}",
+            v.actual_outcome,
+            f"[{correct_style}]{'YES' if v.prediction_correct else 'NO'}[/{correct_style}]",
+            f"${v.repricing_exit_pnl:+.2f}",
+            f"${v.hold_to_resolution_pnl:+.2f}",
+            f"[{diff_style}]${v.pnl_difference:+.2f}[/{diff_style}]",
+        )
+
+    console.print(table)
+
+    # Summary
+    correct = sum(1 for v in results if v.prediction_correct)
+    repricing_total = sum(v.repricing_exit_pnl for v in results)
+    hold_total = sum(v.hold_to_resolution_pnl for v in results)
+
+    console.print(f"\n  Accuracy:       {correct}/{len(results)} ({correct/len(results):.0%})")
+    console.print(f"  Repricing P&L:  ${repricing_total:+.2f}")
+    console.print(f"  Hold P&L:       ${hold_total:+.2f}")
+    console.print(f"  Difference:     ${repricing_total - hold_total:+.2f}")
+
+    session.close()
+
+
+@app.command()
 def fastloop(
     interval_minutes: int = typer.Option(5, "--interval", "-i", help="Minutes between scans"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
