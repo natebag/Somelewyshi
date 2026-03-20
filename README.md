@@ -65,8 +65,10 @@ mirofish status
 | `mirofish trade "Question" -p 0.42` | Predict + evaluate trade |
 | `mirofish run "Question" -p 0.42` | Full pipeline: predict + trade + broadcast |
 | `mirofish scan --analyze` | Scan Polymarket for mispriced markets |
-| `mirofish daemon --interval 1` | Auto-scan + predict + trade on schedule |
+| `mirofish daemon --interval 1` | Auto-scan + predict + trade on schedule (all markets) |
+| `mirofish fastloop --interval 5` | BTC 5-min market scanner with live price feed |
 | `mirofish history --portfolio` | View trades, positions, P&L |
+| `mirofish calibration` | Check prediction accuracy (Brier score, win rate) |
 | `mirofish status` | System health check |
 
 ## Example
@@ -87,8 +89,34 @@ mirofish trade "Will the Fed cut rates in June 2026?" -p 0.42
 # Scan real markets
 mirofish scan -n 10
 
-# Start the daemon (scans every hour)
+# Start the daemon (scans every hour, all market types)
 mirofish daemon --interval 1 --max-markets 5
+
+# BTC fast-loop (scans every 5 minutes with live BTC price)
+mirofish fastloop --interval 5
+
+# Check if predictions are actually correct
+mirofish calibration
+```
+
+## What the Daemon Does (Every Cycle)
+
+```
+DISCOVER → Gamma API, find top markets by volume
+    ↓
+RESEARCH → Decompose question, gather 10-15 evidence sources, synthesize
+    ↓
+PREDICT  → GPT-4o estimates probability (+ BTC price for crypto markets)
+    ↓
+EVALUATE → EV check → slippage filter → Kelly sizing → position cap
+    ↓
+TRADE    → Execute with realistic fill price (dry-run or live)
+    ↓
+MONITOR  → Poll real prices, repricing exit engine (5 exit triggers)
+    ↓
+OPTIMIZE → If win rate < 55% → auto-retune strategy params
+    ↓
+SLEEP    → Repeat
 ```
 
 ## Architecture
@@ -107,8 +135,12 @@ trading/
   discovery.py    — Auto-discover trending/mispriced markets
   research.py     — Auto-research engine (decompose → gather → synthesize)
   fast_loop.py    — BTC 5-min strategy with ensemble voting
+  btc_feed.py     — Live BTC price feed (CryptoCompare, spot + deltas)
   repricing.py    — Exit engine: capture repricing spread before resolution
   optimizer.py    — Self-improving strategy (autoresearch pattern)
+  slippage.py     — Realistic fill price simulation (spread + market impact)
+  calibration.py  — Prediction accuracy tracking (Brier score)
+  position_monitor.py — Real-time position monitoring with exit logic
   positions.py    — Position tracker + P&L
   updater.py      — Bayesian re-updating on market movements
   risk.py         — Position caps, exposure limits, bankroll reserve
