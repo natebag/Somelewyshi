@@ -436,18 +436,25 @@ def compound(
     console.print(f"  Mode:             {'DRY RUN' if settings.trading.dry_run else 'LIVE'}")
     console.print("  Press Ctrl+C to stop\n")
 
+    import re
+    import random
+    from dateutil import parser as dateparser
+
+    analyzed_this_session: set[str] = set()  # Track already-analyzed markets
     cycle = 0
+
     while True:
         try:
             cycle += 1
-            now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            now_utc = datetime.now(timezone.utc)
+            now = now_utc.strftime("%H:%M:%S")
 
             # Check if we can trade
             can_trade, reason = compounder.can_trade()
             if not can_trade:
                 console.print(f"[{now}] [red]HALTED: {reason}[/red]")
                 console.print("[dim]Will resume on next daily reset (UTC midnight)[/dim]")
-                _time.sleep(300)  # Check every 5 min if new day
+                _time.sleep(300)
                 continue
 
             state = compounder.get_state()
@@ -466,13 +473,11 @@ def compound(
             )
             console.print(f"  {btc_str}")
 
-            # Scan for BTC markets — low volume floor since 5-min markets are thin
+            # Scan for BTC markets
             scanner = MarketScanner(poly_client, ScanFilter(min_volume=0, max_markets=200))
             results = scanner.scan()
 
-            # Filter for ACTUAL 5-min/15-min BTC up-or-down markets
-            # Pattern: "Bitcoin Up or Down - March 21, 5:00PM-5:15PM ET"
-            import re
+            # Filter for ACTUAL BTC up-or-down markets
             btc_markets = [
                 r for r in results
                 if re.search(
@@ -486,26 +491,94 @@ def compound(
                 _time.sleep(interval_minutes * 60)
                 continue
 
-            # Analyze top BTC markets
-            for r in btc_markets[:3]:
+            # Sort by expiry — nearest first (parse time from question)
+            def _parse_expiry(question: str) -> datetime:
+                """Extract expiry time from 'March 20, 8:30PM' in question."""
+                try:
+                    # Find date/time pattern like "March 20, 8:30PM-8:45PM ET"
+                    match = re.search(
+                        r"(\w+ \d+,?\s*\d+:\d+(?:AM|PM))",
+                        question, re.IGNORECASE
+                    )
+                    if match:
+                        return dateparser.parse(match.group(1))
+                except Exception:
+                    pass
+                return datetime(2099, 1, 1)  # Far future = low priority
+
+            btc_markets.sort(key=lambda r: _parse_expiry(r.snapshot.question))
+
+            # Filter: skip markets we already analyzed this cycle,
+            # and skip markets that already expired
+            fresh_markets = []
+            for r in btc_markets:
+                market_key = r.snapshot.condition_id
+                if market_key in analyzed_this_session:
+                    continue
+
+                # Check if market is close to expiry (within next 30 min = tradeable)
+                expiry = _parse_expiry(r.snapshot.question)
+                if expiry != datetime(2099, 1, 1):
+                    # Markets with parsed expiry: only trade if within 30 min
+                    # (skip markets 20 hours away)
+                    try:
+                        # Make expiry timezone-aware for comparison
+                        if expiry.tzinfo is None:
+                            import pytz
+                            et = pytz.timezone("US/Eastern")
+                            expiry = et.localize(expiry)
+                        minutes_until = (expiry - now_utc).total_seconds() / 60
+                        if minutes_until < 2:
+                            continue  # Already expired or too close
+                        if minutes_until > 30:
+                            continue  # Too far away — skip for now
+                        console.print(f"  [dim]Expires in {minutes_until:.0f}min[/dim]")
+                    except Exception:
+                        pass  # Can't parse — include it anyway
+
+                fresh_markets.append(r)
+
+            if not fresh_markets:
+                console.print(f"  [dim]{len(btc_markets)} BTC markets found but none expiring soon[/dim]")
+                _time.sleep(interval_minutes * 60)
+                continue
+
+            console.print(f"  {len(fresh_markets)} tradeable BTC markets (expiring within 30min)")
+
+            # Analyze top markets (max 2 per cycle for speed)
+            for r in fresh_markets[:2]:
                 snap = r.snapshot
+                analyzed_this_session.add(snap.condition_id)
+
                 console.print(f"\n  [cyan]{snap.question[:55]}[/cyan]")
                 console.print(f"  YES: {snap.yes_price:.0%} | Vol: ${snap.volume:,.0f}")
 
                 try:
-                    result = pipeline.run(
-                        market_question=snap.question,
-                        market_id=snap.condition_id,
-                        market_price=snap.yes_price,
-                        token_id=snap.token_id_yes,
-                        skip_broadcast=True,
+                    # For 5-min markets: skip heavy research, use fast prediction
+                    # BTC price context is more valuable than 15-source research here
+                    market_data = {}
+                    if btc:
+                        market_data["btc_context"] = btc.to_prompt_context()
+                        market_data["yes_price"] = snap.yes_price
+
+                    # Fast prediction — skip auto-research for speed
+                    pred = predict_adapter._claude_prediction(
+                        snap.question,
+                        market_data,
                     )
 
-                    sig = result.trade_signal
-                    pred = result.prediction
+                    from trading.strategy import evaluate_trade
+                    sig = evaluate_trade(
+                        market_price=snap.yes_price,
+                        true_prob=pred.probability,
+                        bankroll=compounder.state.current_balance,
+                        kelly_multiplier=compounder.kelly_fraction,
+                        min_ev_threshold=compounder.min_ev_threshold,
+                        max_position_usd=compounder.state.current_balance * 0.10,
+                    )
 
                     if not sig.should_trade:
-                        console.print(f"  [dim]SKIP — edge too small ({sig.ev_per_dollar:.0%})[/dim]")
+                        console.print(f"  [dim]SKIP — edge {sig.ev_per_dollar:.0%}[/dim]")
                         continue
 
                     # Size off CURRENT compounding balance
@@ -518,15 +591,20 @@ def compound(
                         console.print(f"  [dim]SKIP — position too small[/dim]")
                         continue
 
-                    # Simulate the trade result
-                    # In dry-run: estimate P&L based on edge (conservative: capture 40% of edge)
-                    estimated_pnl = position_size * sig.ev_per_dollar * 0.4
-                    # Add some variance for realism
-                    import random
-                    if random.random() < pred.probability:
-                        actual_pnl = estimated_pnl * random.uniform(0.5, 1.5)
+                    # Simulate P&L more realistically:
+                    # Binary outcome: we either win (get $1/share - entry) or lose (entry)
+                    # Use our estimated probability as the chance of winning
+                    win_prob = pred.probability if sig.direction == "BUY_YES" else (1 - pred.probability)
+                    shares = position_size / snap.yes_price if sig.direction == "BUY_YES" else position_size / (1 - snap.yes_price)
+
+                    if random.random() < win_prob:
+                        # WIN: capture partial repricing (not full $1, more realistic)
+                        capture = random.uniform(0.3, 0.7)  # Capture 30-70% of edge
+                        actual_pnl = position_size * sig.ev_per_dollar * capture
                     else:
-                        actual_pnl = -position_size * sig.market_price * random.uniform(0.3, 0.7)
+                        # LOSE: lose a fraction of position (stop-loss or partial loss)
+                        loss_fraction = random.uniform(0.15, 0.40)  # Lose 15-40% of position
+                        actual_pnl = -position_size * loss_fraction
 
                     actual_pnl = round(actual_pnl, 2)
                     compounder.record_trade(actual_pnl)
@@ -537,6 +615,7 @@ def compound(
                     console.print(
                         f"  {dir_display} ${position_size:.2f} | "
                         f"Edge: {sig.ev_per_dollar:.0%} | "
+                        f"P(win): {win_prob:.0%} | "
                         f"P&L: [{pnl_color}]${actual_pnl:+.2f}[/{pnl_color}] | "
                         f"Balance: ${compounder.state.current_balance:.2f}"
                     )
