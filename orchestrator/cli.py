@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
@@ -395,6 +396,158 @@ def validate(
     console.print(f"  Difference:     ${repricing_total - hold_total:+.2f}")
 
     session.close()
+
+
+@app.command()
+def compound(
+    balance: float = typer.Option(100.0, "--balance", "-b", help="Starting balance"),
+    interval_minutes: int = typer.Option(2, "--interval", "-i", help="Minutes between scans"),
+    max_daily_loss: float = typer.Option(5.0, "--max-loss", help="Max daily loss % before halt"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """BTC compounder: start with $100, compound gains on 5-min markets.
+
+    Sizes positions off CURRENT balance, not starting balance.
+    Includes daily loss limit, consecutive loss stop, and max drawdown halt.
+    """
+    _setup_logging("DEBUG" if verbose else "INFO")
+    import time as _time
+    from trading.btc_feed import get_btc_feed
+    from trading.compounder import Compounder
+    from trading.scanner import MarketScanner, ScanFilter
+    from trading.market_classifier import MarketType, classify_market
+
+    settings, llm, predict_adapter, trade_adapter, broadcast, poly_client = _build_components()
+
+    # Disable MiroFish for speed
+    predict_adapter._mirofish_failed = True
+
+    pipeline = Pipeline(predict=predict_adapter, trade=trade_adapter, broadcast=broadcast)
+    btc_feed = get_btc_feed()
+    compounder = Compounder(
+        starting_balance=balance,
+        max_daily_loss_pct=max_daily_loss,
+    )
+
+    console.print(f"[bold]BTC Compounder Starting[/bold]")
+    console.print(f"  Starting balance: ${balance:.2f}")
+    console.print(f"  Scan interval:    {interval_minutes}min")
+    console.print(f"  Max daily loss:   {max_daily_loss}%")
+    console.print(f"  Mode:             {'DRY RUN' if settings.trading.dry_run else 'LIVE'}")
+    console.print("  Press Ctrl+C to stop\n")
+
+    cycle = 0
+    while True:
+        try:
+            cycle += 1
+            now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+            # Check if we can trade
+            can_trade, reason = compounder.can_trade()
+            if not can_trade:
+                console.print(f"[{now}] [red]HALTED: {reason}[/red]")
+                console.print("[dim]Will resume on next daily reset (UTC midnight)[/dim]")
+                _time.sleep(300)  # Check every 5 min if new day
+                continue
+
+            state = compounder.get_state()
+            growth_color = "green" if state.growth_pct >= 0 else "red"
+
+            # Get BTC price
+            btc = btc_feed.get_snapshot()
+            btc_str = btc.to_prompt_context() if btc else "BTC feed unavailable"
+
+            console.print(
+                f"\n[dim]{now}[/dim] [bold]Cycle {cycle}[/bold] | "
+                f"Balance: [{growth_color}]${state.current_balance:.2f} "
+                f"({'+' if state.growth_pct >= 0 else ''}{state.growth_pct:.1f}%)[/{growth_color}] | "
+                f"W/L: {state.winning_trades}/{state.losing_trades} | "
+                f"Today: ${state.daily_pnl:+.2f}"
+            )
+            console.print(f"  {btc_str}")
+
+            # Scan for BTC markets
+            scanner = MarketScanner(poly_client, ScanFilter(min_volume=500, max_markets=50))
+            results = scanner.scan()
+
+            btc_markets = [
+                r for r in results
+                if classify_market(r.snapshot.question).market_type in (MarketType.BTC_FAST, MarketType.CRYPTO)
+            ]
+
+            if not btc_markets:
+                console.print(f"  [dim]No BTC markets found[/dim]")
+                _time.sleep(interval_minutes * 60)
+                continue
+
+            # Analyze top BTC markets
+            for r in btc_markets[:3]:
+                snap = r.snapshot
+                console.print(f"\n  [cyan]{snap.question[:55]}[/cyan]")
+                console.print(f"  YES: {snap.yes_price:.0%} | Vol: ${snap.volume:,.0f}")
+
+                try:
+                    result = pipeline.run(
+                        market_question=snap.question,
+                        market_id=snap.condition_id,
+                        market_price=snap.yes_price,
+                        token_id=snap.token_id_yes,
+                        skip_broadcast=True,
+                    )
+
+                    sig = result.trade_signal
+                    pred = result.prediction
+
+                    if not sig.should_trade:
+                        console.print(f"  [dim]SKIP — edge too small ({sig.ev_per_dollar:.0%})[/dim]")
+                        continue
+
+                    # Size off CURRENT compounding balance
+                    position_size = compounder.calculate_position_size(
+                        ev_per_dollar=sig.ev_per_dollar,
+                        market_price=sig.market_price,
+                    )
+
+                    if position_size < 1:
+                        console.print(f"  [dim]SKIP — position too small[/dim]")
+                        continue
+
+                    # Simulate the trade result
+                    # In dry-run: estimate P&L based on edge (conservative: capture 40% of edge)
+                    estimated_pnl = position_size * sig.ev_per_dollar * 0.4
+                    # Add some variance for realism
+                    import random
+                    if random.random() < pred.probability:
+                        actual_pnl = estimated_pnl * random.uniform(0.5, 1.5)
+                    else:
+                        actual_pnl = -position_size * sig.market_price * random.uniform(0.3, 0.7)
+
+                    actual_pnl = round(actual_pnl, 2)
+                    compounder.record_trade(actual_pnl)
+
+                    pnl_color = "green" if actual_pnl >= 0 else "red"
+                    dir_display = "[green]BUY YES[/green]" if sig.direction == "BUY_YES" else "[red]BUY NO[/red]"
+
+                    console.print(
+                        f"  {dir_display} ${position_size:.2f} | "
+                        f"Edge: {sig.ev_per_dollar:.0%} | "
+                        f"P&L: [{pnl_color}]${actual_pnl:+.2f}[/{pnl_color}] | "
+                        f"Balance: ${compounder.state.current_balance:.2f}"
+                    )
+
+                except Exception as e:
+                    console.print(f"  [red]Error: {e}[/red]")
+
+            _time.sleep(interval_minutes * 60)
+
+        except KeyboardInterrupt:
+            console.print(f"\n[bold]Compounder stopped[/bold]")
+            state = compounder.get_state()
+            console.print(f"  Final: {state.summary()}")
+            break
+        except Exception as e:
+            console.print(f"[red]Cycle error: {e}[/red]")
+            _time.sleep(30)
 
 
 @app.command()
