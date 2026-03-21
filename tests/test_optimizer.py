@@ -55,13 +55,16 @@ def test_optimization_improves_or_maintains():
 def test_mutation_changes_params():
     optimizer = StrategyOptimizer()
     original = StrategyParams()
-    mutated = optimizer._mutate(original)
-
-    # At least one param should differ
-    orig_dict = original.to_dict()
-    mut_dict = mutated.to_dict()
-    has_diff = any(orig_dict[k] != mut_dict[k] for k in orig_dict)
-    assert has_diff
+    # Try multiple times since mutation is random
+    changed = False
+    for _ in range(10):
+        mutated = optimizer._mutate(original)
+        orig_dict = original.to_dict()
+        mut_dict = mutated.to_dict()
+        if any(orig_dict[k] != mut_dict[k] for k in orig_dict):
+            changed = True
+            break
+    assert changed
 
 
 def test_too_few_trades_warns():

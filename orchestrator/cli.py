@@ -470,9 +470,15 @@ def compound(
             scanner = MarketScanner(poly_client, ScanFilter(min_volume=500, max_markets=50))
             results = scanner.scan()
 
+            # Filter for ACTUAL 5-min/15-min BTC up-or-down markets
+            # Pattern: "Bitcoin Up or Down - March 21, 5:00PM-5:15PM ET"
+            import re
             btc_markets = [
                 r for r in results
-                if classify_market(r.snapshot.question).market_type in (MarketType.BTC_FAST, MarketType.CRYPTO)
+                if re.search(
+                    r"(bitcoin|btc).*(up.?or.?down|above|below).*\d+:\d+",
+                    r.snapshot.question, re.IGNORECASE
+                )
             ]
 
             if not btc_markets:
