@@ -466,8 +466,8 @@ def compound(
             )
             console.print(f"  {btc_str}")
 
-            # Scan for BTC markets
-            scanner = MarketScanner(poly_client, ScanFilter(min_volume=500, max_markets=50))
+            # Scan for BTC markets — low volume floor since 5-min markets are thin
+            scanner = MarketScanner(poly_client, ScanFilter(min_volume=0, max_markets=200))
             results = scanner.scan()
 
             # Filter for ACTUAL 5-min/15-min BTC up-or-down markets
